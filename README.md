@@ -2,6 +2,8 @@
 
 Live LaTeX formula previews for Org mode, with an editing interface inspired by [Typora](https://typora.io).
 
+![Live formula preview while editing an Org buffer](assets/demo.gif)
+
 - **Inline formula:** when point enters it, the source shows and a popup displays the preview.
 - **Display formula:** when point enters it, the source is highlighted and a centered preview shows below it.
 - **Live update:** when you stop typing, the formula compiles in the background and the preview updates.
