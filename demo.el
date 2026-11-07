@@ -1,0 +1,15 @@
+;;; demo.el --- Temporary UI demo -*- lexical-binding: t; -*-
+(load (expand-file-name "org-typora-math.el"
+                        (file-name-directory (or load-file-name buffer-file-name))) nil t)
+(let ((frame (make-frame '((name . "Org Typora Math Demo") (width . 95) (height . 28)))))
+  (select-frame-set-input-focus frame)
+  (switch-to-buffer (get-buffer-create "*Org Typora Math Demo*"))
+  (erase-buffer)
+  (insert "#+title: Live formula preview\n\nInline math $a$ and display math below.\n\n\\[\na + b = c\n\\]\n\nThis is text.\n\n\\begin{equation}\nE = mc^2\n\\end{equation}\n")
+  (org-mode)
+  (when (fboundp 'evil-emacs-state) (evil-emacs-state))
+  (setq-local org-typora-math-idle-delay 0.6)
+  (goto-char (point-min))
+  (search-forward "a + b")
+  (org-typora-math-mode 1)
+  (set-buffer-modified-p nil))
