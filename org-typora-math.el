@@ -45,6 +45,15 @@ next time a formula is redrawn."
                  (integer :tag "Column")
                  (float :tag "Fraction of window width")))
 
+(defcustom org-typora-math-line-motion-commands
+  '(next-line previous-line evil-next-line evil-previous-line
+    evil-next-visual-line evil-previous-visual-line)
+  "Commands that move point by lines.
+When one of them moves point into a hidden display formula, point goes
+to the first source line of the formula when moving down, or to the
+last one when moving up, at the column where the command started."
+  :type '(repeat function))
+
 (defcustom org-typora-math-inline-popup t
   "Use a child frame for the active inline formula on graphical displays.
 When nil, display its preview on a separate overlay line instead."
@@ -92,6 +101,8 @@ When nil, images are cached in memory only."
 (defvar org-typora-math-mode nil)
 (defvar-local org-typora-math--items nil)
 (defvar-local org-typora-math--active nil)
+(defvar-local org-typora-math--last-point nil
+  "Point before the current command, recorded by `pre-command-hook'.")
 (defvar-local org-typora-math--timer nil)
 (defvar-local org-typora-math--timeout nil)
 (defvar-local org-typora-math--process nil)
@@ -318,16 +329,59 @@ When no popup can be shown, fall back to an overlay line below the formula."
   (when (eq item org-typora-math--active)
     (org-typora-math--update-popup)))
 
+(defun org-typora-math--pre-command ()
+  "Record point before each command."
+  (setq org-typora-math--last-point (point)))
+
+(defun org-typora-math--enter-block ()
+  "Move point to a source line of a hidden block entered by a line motion.
+A hidden block is one screen line, so line motion lands at its end, or
+fails to move up past it.  Go to the start of the first source line
+when coming from above, or of the last one when coming from below.
+Return the column of the previous point, or nil when point did not move."
+  (let ((prev org-typora-math--last-point))
+    (when (and prev (memq this-command org-typora-math-line-motion-commands))
+      (let ((pt (point)))
+        (cl-dolist (item org-typora-math--items)
+          (let* ((ov (org-typora-math--item-overlay item))
+                 (start (overlay-start ov))
+                 (end (overlay-end ov)))
+            (when (and start
+                       (org-typora-math--item-block item)
+                       (overlay-get ov 'display)
+                       (<= start pt (1+ end)))
+              (let ((column (save-excursion (goto-char prev) (current-column))))
+                (cond
+                 ((and (< prev start) (<= pt end))
+                  (goto-char start)
+                  (cl-return column))
+                 ((and (> prev end)
+                       (or (<= pt end)
+                           (= (line-beginning-position)
+                              (save-excursion (goto-char prev)
+                                              (line-beginning-position)))))
+                  (goto-char end)
+                  (goto-char (line-beginning-position))
+                  (cl-return column)))))))))))
+
 (defun org-typora-math--post-command ()
   "Reveal the formula entered by the cursor and conceal the previous one."
   (when org-typora-math-mode
-    (let ((active (org-typora-math--at-point))
+    (let ((column (org-typora-math--enter-block))
+          (active (org-typora-math--at-point))
           (previous org-typora-math--active))
       (unless (eq active previous)
         (setq org-typora-math--active active)
         (when previous (org-typora-math--paint-item previous))
         (when active (org-typora-math--paint-item active))
-        (org-typora-math--update-popup)))))
+        (org-typora-math--update-popup))
+      ;; Columns count displayed text, so move only after revealing the
+      ;; block.  Stay before its end, which is outside the formula.
+      (when (and column active)
+        (move-to-column column)
+        (let ((end (overlay-end (org-typora-math--item-overlay active))))
+          (when (>= (point) end)
+            (goto-char (1- end))))))))
 
 (defun org-typora-math--window-change (&rest _)
   "Reposition the popup after scrolling or changing windows.
@@ -791,6 +845,7 @@ of a `#+SETUPFILE' or an `\\input' file."
           (org-fragtog-mode -1))
         (save-restriction (widen) (org-clear-latex-preview))
         (add-hook 'after-change-functions #'org-typora-math--after-change nil t)
+        (add-hook 'pre-command-hook #'org-typora-math--pre-command nil t)
         (add-hook 'post-command-hook #'org-typora-math--post-command nil t)
         (add-hook 'window-scroll-functions #'org-typora-math--window-change nil t)
         (add-hook 'window-buffer-change-functions #'org-typora-math--window-change nil t)
@@ -801,6 +856,7 @@ of a `#+SETUPFILE' or an `\\input' file."
         (org-typora-math--schedule)))
    (t
     (remove-hook 'after-change-functions #'org-typora-math--after-change t)
+    (remove-hook 'pre-command-hook #'org-typora-math--pre-command t)
     (remove-hook 'post-command-hook #'org-typora-math--post-command t)
     (remove-hook 'window-scroll-functions #'org-typora-math--window-change t)
     (remove-hook 'window-buffer-change-functions #'org-typora-math--window-change t)

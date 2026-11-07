@@ -511,4 +511,40 @@ Every item gets a fake SVG, and `image-size' works without a display."
        (with-current-buffer org-typora-math--log
          (should (string-match-p "Cannot write cache file" (buffer-string))))))))
 
+;; Line motion over a hidden block lands at its end, or does not move up
+;; past it.  Batch Emacs cannot draw images, so set up that result by hand.
+(defun org-typora-math-test--line-motion (command prev landed)
+  "Run the post-command hook as if COMMAND moved point from PREV to LANDED."
+  (let ((item (cl-find-if #'org-typora-math--item-block org-typora-math--items))
+        (this-command command))
+    (overlay-put (org-typora-math--item-overlay item) 'display "image")
+    (setq org-typora-math--active nil
+          org-typora-math--last-point prev)
+    (goto-char landed)
+    (org-typora-math--post-command)
+    (point)))
+
+(ert-deftest org-typora-math-line-motion-enters-block ()
+  (org-typora-math-test--buffer
+      "Some text line here.\n\\begin{equation}\nE\n\\end{equation}\nAfter the block.\n"
+    (org-typora-math--collect)
+    (let* ((org-typora-math-test--real-paint t)
+           (ov (org-typora-math--item-overlay (car org-typora-math--items)))
+           (start (overlay-start ov))
+           (end (overlay-end ov))
+           (last-line (save-excursion (goto-char end) (line-beginning-position))))
+      ;; From above at column 9: first line, column 9, not the block end.
+      (should (= (+ start 9) (org-typora-math-test--line-motion 'next-line 10 end)))
+      (should (eq org-typora-math--active (car org-typora-math--items)))
+      ;; From above at a column past the first line: end of the first line.
+      (should (= (+ start 16) (org-typora-math-test--line-motion 'next-line 19 end)))
+      ;; From below, stuck on the same line: last line, same column.
+      (should (= (+ last-line 4)
+                 (org-typora-math-test--line-motion 'previous-line (+ end 5) (1+ end))))
+      ;; From below at a column past the last line: stay inside the block.
+      (should (= (1- end)
+                 (org-typora-math-test--line-motion 'previous-line (+ end 16) (1+ end))))
+      ;; Other commands are left alone.
+      (should (= end (org-typora-math-test--line-motion 'forward-char 10 end))))))
+
 ;;; org-typora-math-test.el ends here

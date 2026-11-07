@@ -100,6 +100,7 @@ Run `org-typora-math-refresh` after you change files that the cache key does not
 | `org-typora-math-scale` | `2.0` | Display scale of the SVG images (no new compilation) |
 | `org-typora-math-display-center` | `window` | Center of display previews: `window`, `fill-column` (column `fill-column`/2), an integer column, or a float fraction of the window width |
 | `org-typora-math-inline-popup` | `t` | Popup for inline formulas; `nil` shows the preview below the source |
+| `org-typora-math-line-motion-commands` | `next-line`, `previous-line`, and the evil line motions | Commands that, on entering a hidden display formula, put point on its first or last source line at the same column |
 | `org-typora-math-process-timeout` | `15` | Maximum seconds for each compiler stage |
 | `org-typora-math-latex-program` | `"latex"` | Program that makes DVI (a name or an absolute path) |
 | `org-typora-math-dvisvgm-program` | `"dvisvgm"` | Program that converts DVI to SVG |
