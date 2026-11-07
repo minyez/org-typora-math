@@ -71,6 +71,12 @@ When nil, display its preview on a separate overlay line instead."
 (defvar-local org-typora-math--popup-buffer nil)
 (defvar-local org-typora-math--restore-fragtog nil)
 (defvar-local org-typora-math--log nil)
+(defvar-local org-typora-math--pending nil
+  "Non-nil when a refresh was skipped because the buffer was not on screen.")
+
+(defun org-typora-math--visible-p ()
+  "Return non-nil when a window on any frame shows the current buffer."
+  (and (get-buffer-window (current-buffer) t) t))
 
 (defun org-typora-math--cancel-timer (symbol)
   "Cancel the buffer-local timer stored in SYMBOL."
@@ -234,8 +240,12 @@ Return non-nil when a popup was shown."
         (org-typora-math--paint)))))
 
 (defun org-typora-math--window-change (&rest _)
-  "Reposition the popup after scrolling or changing windows."
+  "Reposition the popup after scrolling or changing windows.
+Also start a refresh that was postponed while the buffer was hidden."
   (when org-typora-math-mode
+    (when (and org-typora-math--pending (org-typora-math--visible-p))
+      (setq org-typora-math--pending nil)
+      (org-typora-math--schedule))
     (if (eq (window-buffer (selected-window)) (current-buffer))
         (org-typora-math--paint)
       (org-typora-math--hide-popup))))
@@ -251,7 +261,9 @@ Return non-nil when a popup was shown."
              (with-current-buffer buffer
                (setq org-typora-math--timer nil)
                (when org-typora-math-mode
-                 (org-typora-math--refresh)))))
+                 (if (org-typora-math--visible-p)
+                     (org-typora-math--refresh)
+                   (setq org-typora-math--pending t))))))
          (current-buffer))))
 
 (defun org-typora-math--after-change (begin end _old-length)
@@ -322,6 +334,25 @@ Reuse overlays at the same start position, preserving the last good image."
             (org-typora-math--item-source item)
             "%\n\\end{document}\n")))
 
+(defun org-typora-math--order-jobs (jobs)
+  "Sort JOBS: the active formula, then formulas in the window, then the rest."
+  (let* ((window (get-buffer-window (current-buffer) t))
+         (start (and window (window-start window)))
+         (end (and window (window-end window t))))
+    (cl-flet ((rank (job)
+                (let ((item (car job)))
+                  (cond
+                   ((eq item org-typora-math--active) 0)
+                   ((and window
+                         (let ((ov (org-typora-math--item-overlay item)))
+                           (and (overlay-buffer ov)
+                                (< (overlay-start ov) end)
+                                (> (overlay-end ov) start))))
+                    1)
+                   (t 2)))))
+      (let ((ranked (mapcar (lambda (job) (cons (rank job) job)) jobs)))
+        (mapcar #'cdr (sort ranked (lambda (a b) (< (car a) (car b)))))))))
+
 (defun org-typora-math--refresh ()
   "Collect formulas and enqueue asynchronous compilations."
   (condition-case err
@@ -341,11 +372,7 @@ Reuse overlays at the same start position, preserving the last good image."
                              (org-typora-math--item-error item) nil))
                ((not (equal key (org-typora-math--item-attempted item)))
                 (push (list item key document) jobs)))))
-          (setq org-typora-math--queue
-                (sort (nreverse jobs)
-                      (lambda (a b)
-                        (and (eq (car a) org-typora-math--active)
-                             (not (eq (car b) org-typora-math--active)))))))
+          (setq org-typora-math--queue (org-typora-math--order-jobs (nreverse jobs))))
         (org-typora-math--paint)
         (org-typora-math--next))
     (error (message "Org Typora math: %s" (error-message-string err)))))
@@ -505,7 +532,12 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
 (define-minor-mode org-typora-math-mode
   "Preview Org math while editing, using debounced asynchronous LaTeX jobs."
   :lighter " TMath"
-  (if org-typora-math-mode
+  (cond
+   ;; Org creates internal buffers named with a leading space, for example
+   ;; during export.  Never preview in those.
+   ((and org-typora-math-mode (string-prefix-p " " (buffer-name)))
+    (setq org-typora-math-mode nil))
+   (org-typora-math-mode
       (progn
         (when org-typora-math--cache
           (org-typora-math-mode -1)
@@ -519,7 +551,6 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
             (setq org-typora-math-mode nil)
             (user-error "Cannot find %s" program)))
         (setq org-typora-math--cache (make-hash-table :test #'equal))
-        (org-typora-math--log-buffer)
         (setq org-typora-math--restore-fragtog (bound-and-true-p org-fragtog-mode))
         (when (and org-typora-math--restore-fragtog (fboundp 'org-fragtog-mode))
           (org-fragtog-mode -1))
@@ -532,7 +563,8 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
         (add-hook 'window-size-change-functions #'org-typora-math--window-change nil t)
         (add-hook 'kill-buffer-hook #'org-typora-math--cleanup nil t)
         (add-hook 'change-major-mode-hook #'org-typora-math--cleanup nil t)
-        (org-typora-math--schedule))
+        (org-typora-math--schedule)))
+   (t
     (remove-hook 'after-change-functions #'org-typora-math--after-change t)
     (remove-hook 'post-command-hook #'org-typora-math--post-command t)
     (remove-hook 'window-scroll-functions #'org-typora-math--window-change t)
@@ -544,7 +576,7 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
     (org-typora-math--cleanup)
     (when (and org-typora-math--restore-fragtog (fboundp 'org-fragtog-mode))
       (org-fragtog-mode 1))
-    (setq org-typora-math--restore-fragtog nil)))
+    (setq org-typora-math--restore-fragtog nil))))
 
 (provide 'org-typora-math)
 ;;; org-typora-math.el ends here

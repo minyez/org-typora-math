@@ -6,16 +6,21 @@
 (defmacro org-typora-math-test--buffer (text &rest body)
   "Evaluate BODY in an Org buffer containing TEXT, without GUI painting."
   (declare (indent 1))
-  `(with-temp-buffer
-     (org-mode)
-     (insert ,text)
-     (goto-char (point-min))
-     (cl-letf (((symbol-function 'org-typora-math--paint) #'ignore))
-       (unwind-protect
-           (progn (org-typora-math-mode 1)
-                  (org-typora-math--cancel-timer 'org-typora-math--timer)
-                  ,@body)
-         (org-typora-math-mode -1)))))
+  `(let ((buffer (generate-new-buffer "org-typora-math-test")))
+     (unwind-protect
+         (with-current-buffer buffer
+           (org-mode)
+           (insert ,text)
+           (goto-char (point-min))
+           (cl-letf (((symbol-function 'org-typora-math--paint) #'ignore)
+                     ((symbol-function 'org-typora-math--paint-item) #'ignore)
+                     ((symbol-function 'org-typora-math--update-popup) #'ignore))
+             (unwind-protect
+                 (progn (org-typora-math-mode 1)
+                        (org-typora-math--cancel-timer 'org-typora-math--timer)
+                        ,@body)
+               (org-typora-math-mode -1))))
+       (kill-buffer buffer))))
 
 (defun org-typora-math-test--wait ()
   "Wait for pending processes, failing if they do not finish in 20 seconds."
@@ -54,7 +59,7 @@
 
 (ert-deftest org-typora-math-recreates-killed-log ()
   (org-typora-math-test--buffer "$a$"
-    (kill-buffer org-typora-math--log)
+    (kill-buffer (org-typora-math--log-buffer))
     (org-typora-math--refresh)
     (org-typora-math-test--wait)
     (should-not (org-typora-math--item-error (car org-typora-math--items)))
@@ -203,5 +208,70 @@
       (should-not (process-live-p process))
       (should-not (file-exists-p directory))
       (should-not (buffer-live-p log)))))
+
+(ert-deftest org-typora-math-hidden-buffer-defers-compilation ()
+  (org-typora-math-test--buffer "$a$"
+    (should-not (org-typora-math--visible-p))
+    (should-not org-typora-math--log)
+    (let ((org-typora-math-idle-delay 0.01))
+      (org-typora-math--schedule)
+      (accept-process-output nil 0.2))
+    (should-not org-typora-math--process)
+    (should-not org-typora-math--items)
+    (should org-typora-math--pending)))
+
+(ert-deftest org-typora-math-showing-buffer-starts-compilation ()
+  (org-typora-math-test--buffer "$a$"
+    (let ((org-typora-math-idle-delay 0.01)
+          (previous (window-buffer (selected-window))))
+      (org-typora-math--schedule)
+      (accept-process-output nil 0.2)
+      (should org-typora-math--pending)
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) (current-buffer))
+            (org-typora-math--window-change)
+            (should-not org-typora-math--pending)
+            (accept-process-output nil 0.2)
+            (should (processp org-typora-math--process))
+            (org-typora-math-test--wait))
+        (set-window-buffer (selected-window) previous))
+      (should (org-typora-math--item-svg (car org-typora-math--items))))))
+
+(ert-deftest org-typora-math-orders-queue-by-visibility ()
+  (org-typora-math-test--buffer
+      (concat "$a$\n\n" (make-string 5000 ?\n) "$b$\n\n$c$\n")
+    (org-typora-math--collect)
+    (let* ((items org-typora-math--items)
+           (jobs (mapcar (lambda (item) (list item "k" "d")) (reverse items)))
+           (previous (window-buffer (selected-window))))
+      (setq org-typora-math--active (nth 2 items))
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) (current-buffer))
+            (set-window-start (selected-window) (point-min))
+            (let ((order (cl-letf (((symbol-function 'window-end)
+                                    (lambda (&rest _) 20)))
+                           (mapcar #'car (org-typora-math--order-jobs jobs)))))
+              (should (eq (nth 2 items) (car order)))
+              (should (eq (nth 0 items) (cadr order)))))
+        (set-window-buffer (selected-window) previous)))))
+
+(ert-deftest org-typora-math-internal-buffer-stays-off ()
+  (let ((buffer (generate-new-buffer " *tmp*"))
+        (timers (length timer-list)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (org-mode)
+          (insert "$a$")
+          (org-typora-math-mode 1)
+          (should-not org-typora-math-mode)
+          (should-not org-typora-math--timer)
+          (should-not org-typora-math--log)
+          (should-not org-typora-math--cache)
+          (should-not (memq #'org-typora-math--after-change after-change-functions))
+          (should (= timers (length timer-list)))
+          (should-not (get-buffer " *org-typora-math-log*")))
+      (kill-buffer buffer))))
 
 ;;; org-typora-math-test.el ends here
