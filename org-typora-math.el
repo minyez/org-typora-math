@@ -62,6 +62,24 @@ When nil, display its preview on a separate overlay line instead."
   "Maximum seconds allowed for each external compilation stage."
   :type 'number)
 
+(defcustom org-typora-math-cache-directory
+  (locate-user-emacs-file "org-typora-math/")
+  "Directory where rendered SVG images are kept between sessions.
+Each file is named after a hash of the complete TeX document.
+When nil, images are cached in memory only."
+  :type '(choice (const :tag "Memory only" nil) directory))
+
+(defconst org-typora-math--cache-version "1"
+  "Version of the cache key.  Change it when the output format changes.")
+
+(defconst org-typora-math--latex-arguments
+  '("-interaction=nonstopmode" "-halt-on-error" "-no-shell-escape" "preview.tex")
+  "Arguments of the LaTeX program.")
+
+(defconst org-typora-math--dvisvgm-arguments
+  '("--no-fonts" "--exact-bbox" "--bbox=min" "--output=preview.svg" "preview.dvi")
+  "Arguments of the dvisvgm program.")
+
 (defface org-typora-math-source
   '((((class color) (background light)) :background "#f5f6f7" :extend t)
     (((class color) (background dark)) :background "#252a31" :extend t))
@@ -485,18 +503,74 @@ The contents of a `#+SETUPFILE' are not watched; run
       (let ((ranked (mapcar (lambda (job) (cons (rank job) job)) jobs)))
         (mapcar #'cdr (sort ranked (lambda (a b) (< (car a) (car b)))))))))
 
-(defun org-typora-math--build-jobs ()
-  "Set each item's key, use cached images, and return jobs for the rest."
+(defun org-typora-math--cache-file (key)
+  "Return the disk cache file of KEY, or nil when the disk cache is off."
+  (when org-typora-math-cache-directory
+    (expand-file-name (concat (substring key 0 2) "/" key ".svg")
+                      org-typora-math-cache-directory)))
+
+(defun org-typora-math--cache-delete (key)
+  "Delete the disk cache file of KEY, ignoring errors."
+  (when-let* ((file (org-typora-math--cache-file key)))
+    (ignore-errors (delete-file file))))
+
+(defun org-typora-math--cache-get (key)
+  "Return the SVG for KEY from memory or disk, or nil.
+Store a disk hit in memory.  Delete a disk file that is not valid SVG."
+  (or (gethash key org-typora-math--cache)
+      (when-let* ((file (org-typora-math--cache-file key))
+                  ((file-regular-p file)))
+        (let ((svg (ignore-errors
+                     (with-temp-buffer
+                       (insert-file-contents file)
+                       (buffer-string)))))
+          (if (and svg (string-search "<svg" svg))
+              (puthash key svg org-typora-math--cache)
+            (ignore-errors (delete-file file))
+            nil)))))
+
+(defun org-typora-math--cache-put (key svg)
+  "Store SVG for KEY in memory and, atomically, on disk.
+A write error goes to the log and does not affect the preview."
+  (puthash key svg org-typora-math--cache)
+  (when-let* ((file (org-typora-math--cache-file key)))
+    (let (temporary)
+      (condition-case err
+          (progn
+            (make-directory (file-name-directory file) t)
+            (setq temporary (make-temp-file
+                             (expand-file-name ".tmp-" (file-name-directory file))))
+            (let ((coding-system-for-write 'utf-8-unix))
+              (with-temp-file temporary (insert svg)))
+            (rename-file temporary file t)
+            (setq temporary nil))
+        (error
+         (with-current-buffer (org-typora-math--log-buffer)
+           (goto-char (point-max))
+           (insert "\nCannot write cache file " file ": "
+                   (error-message-string err) "\n"))))
+      (when temporary (ignore-errors (delete-file temporary))))))
+
+(defun org-typora-math--build-jobs (&optional force)
+  "Set each item's key, use cached images, and return jobs for the rest.
+With FORCE, delete the disk files of the current keys first."
   (let ((preamble (org-typora-math--preamble))
         (color (org-typora-math--color))
         jobs)
     (dolist (item org-typora-math--items)
       (let* ((document (org-typora-math--document item preamble color))
              (key (secure-hash 'sha256
-                               (concat org-typora-math-latex-program "\0"
-                                       org-typora-math-dvisvgm-program "\0"
-                                       document)))
-             (cached (gethash key org-typora-math--cache)))
+                               (mapconcat
+                                #'identity
+                                (append (list org-typora-math--cache-version
+                                              org-typora-math-latex-program)
+                                        org-typora-math--latex-arguments
+                                        (list org-typora-math-dvisvgm-program)
+                                        org-typora-math--dvisvgm-arguments
+                                        (list document))
+                                "\0")))
+             (cached (progn (when force (org-typora-math--cache-delete key))
+                            (org-typora-math--cache-get key))))
         (setf (org-typora-math--item-key item) key)
         (cond
          (cached (setf (org-typora-math--item-svg item) cached
@@ -505,13 +579,14 @@ The contents of a `#+SETUPFILE' are not watched; run
           (push (list item key document) jobs)))))
     (nreverse jobs)))
 
-(defun org-typora-math--refresh ()
-  "Collect formulas and enqueue asynchronous compilations."
+(defun org-typora-math--refresh (&optional force)
+  "Collect formulas and enqueue asynchronous compilations.
+With FORCE, ignore disk cache files of the current formulas."
   (condition-case err
       (progn
         (org-typora-math--collect)
         (setq org-typora-math--queue
-              (org-typora-math--order-jobs (org-typora-math--build-jobs)))
+              (org-typora-math--order-jobs (org-typora-math--build-jobs force)))
         (org-typora-math--paint)
         (org-typora-math--next))
     (error (message "Org Typora math: %s" (error-message-string err)))))
@@ -548,7 +623,7 @@ Then start the next queued job."
            (svg (with-temp-buffer
                   (insert-file-contents file)
                   (buffer-string))))
-      (puthash key svg org-typora-math--cache)
+      (org-typora-math--cache-put key svg)
       (setf (org-typora-math--item-svg item) svg
             (org-typora-math--item-attempted item) key
             (org-typora-math--item-error item) nil)))
@@ -610,7 +685,7 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
     (while (and (not started) org-typora-math-mode
                 (not org-typora-math--process) org-typora-math--queue)
       (pcase-let ((`(,item ,key ,document) (pop org-typora-math--queue)))
-        (if-let* ((cached (gethash key org-typora-math--cache)))
+        (if-let* ((cached (org-typora-math--cache-get key)))
             (progn
               (setf (org-typora-math--item-svg item) cached
                     (org-typora-math--item-attempted item) key
@@ -622,20 +697,22 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
           (setq started
                 (org-typora-math--start-stage
                  item key
-                 (list org-typora-math-latex-program "-interaction=nonstopmode"
-                       "-halt-on-error" "-no-shell-escape" "preview.tex")
+                 (cons org-typora-math-latex-program
+                       org-typora-math--latex-arguments)
                  "preview.dvi"
                  (lambda ()
                    (org-typora-math--start-stage
                     item key
-                    (list org-typora-math-dvisvgm-program "--no-fonts" "--exact-bbox"
-                          "--bbox=min" "--output=preview.svg" "preview.dvi")
+                    (cons org-typora-math-dvisvgm-program
+                          org-typora-math--dvisvgm-arguments)
                     "preview.svg"
                     (lambda () (org-typora-math--finish item key) t))))))))))
 
 ;;;###autoload
 (defun org-typora-math-refresh ()
-  "Rebuild all previews, retrying failures and clearing the memory cache."
+  "Rebuild all previews, retrying failures and ignoring cached images.
+Also needed after changes the cache key does not see, such as the contents
+of a `#+SETUPFILE' or an `\\input' file."
   (interactive)
   (unless org-typora-math-mode (user-error "Enable org-typora-math-mode first"))
   (org-typora-math--cancel-timer 'org-typora-math--timer)
@@ -644,7 +721,25 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
   (setq org-typora-math--preamble nil)
   (dolist (item org-typora-math--items)
     (setf (org-typora-math--item-attempted item) nil))
-  (org-typora-math--refresh))
+  (org-typora-math--refresh t))
+
+;;;###autoload
+(defun org-typora-math-clear-cache ()
+  "Delete the disk cache directory after confirmation."
+  (interactive)
+  (let ((directory org-typora-math-cache-directory))
+    (unless (and directory (file-directory-p directory))
+      (user-error "No disk cache to clear"))
+    (let* ((files (directory-files-recursively directory ""))
+           (bytes (apply #'+ (mapcar (lambda (file)
+                                       (or (file-attribute-size (file-attributes file)) 0))
+                                     files))))
+      (when (yes-or-no-p (format "Delete %s (%d files, %s)? "
+                                 directory (length files)
+                                 (file-size-human-readable bytes)))
+        (delete-directory directory t)
+        (when org-typora-math--cache (clrhash org-typora-math--cache))
+        (message "Org Typora math: cache cleared")))))
 
 (defun org-typora-math-show-log ()
   "Show compiler output for the current buffer."

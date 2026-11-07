@@ -3,6 +3,9 @@
 (require 'ert)
 (require 'org-typora-math)
 
+;; Tests must not touch the user's cache.  Disk cache tests bind it again.
+(setq org-typora-math-cache-directory nil)
+
 ;; Painting is stubbed unless a test binds this variable to non-nil.
 (defvar org-typora-math-test--real-paint nil)
 (defconst org-typora-math-test--paint-functions
@@ -412,5 +415,100 @@ Every item gets a fake SVG, and `image-size' works without a display."
     (let ((org-typora-math-display-center 0.3))
       (should (equal '(space :align-to (- (0.3 . text) (50)))
                      (org-typora-math--align 100))))))
+
+(defmacro org-typora-math-test--disk-cache (&rest body)
+  "Run BODY with the disk cache in a new temporary directory."
+  `(let ((org-typora-math-cache-directory
+          (file-name-as-directory (make-temp-file "org-typora-math-cache-" t))))
+     (unwind-protect (progn ,@body)
+       (set-file-modes org-typora-math-cache-directory #o700)
+       (delete-directory org-typora-math-cache-directory t))))
+
+(defun org-typora-math-test--cache-files ()
+  (directory-files-recursively org-typora-math-cache-directory "\\.svg\\'"))
+
+(ert-deftest org-typora-math-disk-cache-survives-toggle ()
+  (org-typora-math-test--disk-cache
+   (org-typora-math-test--buffer "$a$"
+     (org-typora-math--refresh)
+     (org-typora-math-test--wait)
+     (should (= 1 (length (org-typora-math-test--cache-files))))
+     (should (string-match-p "/[0-9a-f][0-9a-f]/[0-9a-f]\\{64\\}\\.svg\\'"
+                             (car (org-typora-math-test--cache-files))))
+     (org-typora-math-mode -1)
+     (org-typora-math-mode 1)
+     (org-typora-math--cancel-timer 'org-typora-math--timer)
+     (org-typora-math--refresh)
+     (should-not org-typora-math--process)
+     (should (string-match-p "<svg" (org-typora-math--item-svg
+                                     (car org-typora-math--items)))))))
+
+(ert-deftest org-typora-math-disk-cache-serves-new-buffer ()
+  (org-typora-math-test--disk-cache
+   (org-typora-math-test--buffer "$a$"
+     (org-typora-math--refresh)
+     (org-typora-math-test--wait))
+   (org-typora-math-test--buffer "$a$"
+     (org-typora-math--refresh)
+     (should-not org-typora-math--process)
+     (should (string-match-p "<svg" (org-typora-math--item-svg
+                                     (car org-typora-math--items)))))))
+
+(ert-deftest org-typora-math-refresh-command-forces-compile ()
+  (org-typora-math-test--disk-cache
+   (org-typora-math-test--buffer "$a$"
+     (org-typora-math--refresh)
+     (org-typora-math-test--wait)
+     (let ((file (car (org-typora-math-test--cache-files))))
+       (with-temp-file file (insert "<svg>old</svg>"))
+       (org-typora-math-refresh)
+       (should (processp org-typora-math--process))
+       (org-typora-math-test--wait)
+       (should-not (equal "<svg>old</svg>"
+                          (with-temp-buffer (insert-file-contents file)
+                                            (buffer-string))))))))
+
+(ert-deftest org-typora-math-disk-cache-replaces-bad-file ()
+  (org-typora-math-test--disk-cache
+   (org-typora-math-test--buffer "$a$"
+     (org-typora-math--refresh)
+     (org-typora-math-test--wait)
+     (let ((file (car (org-typora-math-test--cache-files))))
+       (org-typora-math-mode -1)
+       (org-typora-math-mode 1)
+       (org-typora-math--cancel-timer 'org-typora-math--timer)
+       (with-temp-file file)
+       (org-typora-math--refresh)
+       (should (processp org-typora-math--process))
+       (org-typora-math-test--wait)
+       (should (string-match-p "<svg" (with-temp-buffer
+                                        (insert-file-contents file)
+                                        (buffer-string))))))))
+
+(ert-deftest org-typora-math-no-disk-cache-when-option-is-nil ()
+  (let ((directory (make-temp-file "org-typora-math-cache-" t)))
+    (unwind-protect
+        (let ((org-typora-math-cache-directory nil))
+          (org-typora-math-test--buffer "$a$"
+            (should-not (org-typora-math--cache-file "abcdef"))
+            (org-typora-math--refresh)
+            (org-typora-math-test--wait)
+            (should (org-typora-math--item-svg (car org-typora-math--items)))
+            (should-not (directory-files-recursively directory ""))))
+      (delete-directory directory t))))
+
+(ert-deftest org-typora-math-disk-cache-write-failure-is-harmless ()
+  (skip-unless (not (zerop (user-uid))))
+  (org-typora-math-test--disk-cache
+   (set-file-modes org-typora-math-cache-directory #o500)
+   (org-typora-math-test--buffer "$a$"
+     (org-typora-math--refresh)
+     (org-typora-math-test--wait)
+     (let ((item (car org-typora-math--items)))
+       (should (string-match-p "<svg" (org-typora-math--item-svg item)))
+       (should-not (org-typora-math--item-error item))
+       (should-not (org-typora-math-test--cache-files))
+       (with-current-buffer org-typora-math--log
+         (should (string-match-p "Cannot write cache file" (buffer-string))))))))
 
 ;;; org-typora-math-test.el ends here
