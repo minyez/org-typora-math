@@ -179,7 +179,11 @@ Return non-nil when a popup was shown."
                  (parent (selected-frame))
                  (edges (window-inside-pixel-edges))
                  (size (image-size image t))
-                 (width (+ 20 (ceiling (car size))))
+                 ;; Without fringes, Emacs keeps the last column of the
+                 ;; popup window free for the truncation glyph.  Pad
+                 ;; both sides by one column so the image is not cut.
+                 (pad (frame-char-width parent))
+                 (width (+ (* 2 pad) 2 (ceiling (car size))))
                  (height (+ 20 (ceiling (cdr size))))
                  (left (max 0 (min (+ (car edges) (car xy))
                                    (- (frame-pixel-width parent) width 4))))
@@ -193,10 +197,11 @@ Return non-nil when a popup was shown."
             (with-current-buffer org-typora-math--popup-buffer
               (let ((inhibit-read-only t))
                 (erase-buffer)
-                (insert (propertize
+                (insert (propertize " " 'display `(space :width (,pad)))
+                        (propertize
                          " " 'display
                          (cons 'image (plist-put (copy-sequence (cdr image))
-                                                 :margin '(8 . 8)))))
+                                                 :margin '(0 . 8)))))
                 (goto-char (point-min))
                 (setq-local cursor-type nil
                             mode-line-format nil
