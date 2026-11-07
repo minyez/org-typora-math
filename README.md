@@ -95,6 +95,7 @@ Run `org-typora-math-refresh` after you change the preamble, the theme, or the c
 | --- | --- | --- |
 | `org-typora-math-idle-delay` | `0.6` | Seconds without edits before compilation starts |
 | `org-typora-math-scale` | `2.0` | Display scale of the SVG images (no new compilation) |
+| `org-typora-math-display-center` | `window` | Center of display previews: `window`, `fill-column` (column `fill-column`/2), an integer column, or a float fraction of the window width |
 | `org-typora-math-inline-popup` | `t` | Popup for inline formulas; `nil` shows the preview below the source |
 | `org-typora-math-process-timeout` | `15` | Maximum seconds for each compiler stage |
 | `org-typora-math-latex-program` | `"latex"` | Program that makes DVI (a name or an absolute path) |

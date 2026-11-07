@@ -32,6 +32,19 @@
   "Scale of the generated SVG images."
   :type 'number)
 
+(defcustom org-typora-math-display-center 'window
+  "Horizontal position of the center of display formula previews.
+`window'      the center of the window text area.
+`fill-column' column `fill-column'/2, the center of filled text.
+An integer N  column N.
+A float F     the fraction F of the text area width, from its left edge.
+Columns use the width of the default font.  The setting applies the
+next time a formula is redrawn."
+  :type '(choice (const :tag "Window center" window)
+                 (const :tag "Half of fill-column" fill-column)
+                 (integer :tag "Column")
+                 (float :tag "Fraction of window width")))
+
 (defcustom org-typora-math-inline-popup t
   "Use a child frame for the active inline formula on graphical displays.
 When nil, display its preview on a separate overlay line instead."
@@ -135,12 +148,21 @@ Reuse the stored descriptor until the SVG or `org-typora-math-scale' changes."
   (or (org-typora-math--item-width item)
       (setf (org-typora-math--item-width item) (car (image-size image t)))))
 
+(defun org-typora-math--align (width)
+  "Return a display spec that puts an image of WIDTH pixels at the center.
+The center follows `org-typora-math-display-center'."
+  (let ((center (pcase org-typora-math-display-center
+                  ('fill-column (/ (current-fill-column) 2.0))
+                  ((pred integerp) org-typora-math-display-center)
+                  ((pred floatp) (cons org-typora-math-display-center 'text))
+                  (_ 'center))))
+    `(space :align-to (- ,center (,(round (/ width 2)))))))
+
 (defun org-typora-math--panel (item image)
   "Return a centered overlay line displaying IMAGE of ITEM."
   (let ((width (org-typora-math--width item image)))
     (concat "\n"
-            (propertize " " 'display
-                        `(space :align-to (- center (,(round (/ width 2))))))
+            (propertize " " 'display (org-typora-math--align width))
             (propertize " " 'display image)
             "\n")))
 
@@ -240,8 +262,8 @@ The popup of the active inline formula is handled by
             ;; on the overlay and the alignment in a separate before-string.
             (overlay-put ov 'before-string
                          (propertize " " 'display
-                                     `(space :align-to
-                                             (- center (,(round (/ (org-typora-math--width item image) 2)))))))
+                                     (org-typora-math--align
+                                      (org-typora-math--width item image))))
             (overlay-put ov 'display image))
            (t (overlay-put ov 'display image))))))))
 

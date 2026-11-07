@@ -398,4 +398,19 @@ Every item gets a fake SVG, and `image-size' works without a display."
             (org-typora-math--preamble)
             (should (= 3 builds))))))))
 
+(ert-deftest org-typora-math-display-center-option ()
+  (with-temp-buffer
+    (setq fill-column 70)
+    (should (equal '(space :align-to (- center (50)))
+                   (org-typora-math--align 100)))
+    (let ((org-typora-math-display-center 'fill-column))
+      (should (equal '(space :align-to (- 35.0 (50)))
+                     (org-typora-math--align 100))))
+    (let ((org-typora-math-display-center 40))
+      (should (equal '(space :align-to (- 40 (50)))
+                     (org-typora-math--align 100))))
+    (let ((org-typora-math-display-center 0.3))
+      (should (equal '(space :align-to (- (0.3 . text) (50)))
+                     (org-typora-math--align 100))))))
+
 ;;; org-typora-math-test.el ends here
