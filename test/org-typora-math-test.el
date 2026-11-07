@@ -148,6 +148,17 @@
       (should-not (buffer-modified-p))
       (should (equal undo buffer-undo-list)))))
 
+(ert-deftest org-typora-math-panel-newline-only-before-trailing-text ()
+  (dolist (case '(("\\[b\\]\n" . nil) ("\\[b\\]" . nil) ("\\[b\\] tail\n" . t)))
+    (org-typora-math-test--buffer (car case)
+      (org-typora-math--collect)
+      (let ((item (car org-typora-math--items)))
+        ;; A preset width avoids needing a real image.
+        (setf (org-typora-math--item-width item) 10)
+        (let ((panel (org-typora-math--panel item nil)))
+          (should (string-prefix-p "\n" panel))
+          (should (eq (cdr case) (string-suffix-p "\n" panel))))))))
+
 (ert-deftest org-typora-math-real-async-compile-and-cache ()
   (org-typora-math-test--buffer "#+LATEX_HEADER: \\newcommand{\\mytest}{x^2}\n\n$\\mytest$\n"
     (org-typora-math--refresh)

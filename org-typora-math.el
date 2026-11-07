@@ -188,12 +188,14 @@ The center follows `org-typora-math-display-center'."
     `(space :align-to (- ,center (,(round (/ width 2)))))))
 
 (defun org-typora-math--panel (item image)
-  "Return a centered overlay line displaying IMAGE of ITEM."
-  (let ((width (org-typora-math--width item image)))
+  "Return a centered overlay line displaying IMAGE of ITEM.
+The line ends with a newline only when text follows ITEM on its line."
+  (let ((width (org-typora-math--width item image))
+        (end (overlay-end (org-typora-math--item-overlay item))))
     (concat "\n"
             (propertize " " 'display (org-typora-math--align width))
             (propertize " " 'display image)
-            "\n")))
+            (unless (save-excursion (goto-char end) (eolp)) "\n"))))
 
 (defun org-typora-math--popup (image position)
   "Display IMAGE in a child frame near POSITION.
