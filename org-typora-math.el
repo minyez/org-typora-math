@@ -55,7 +55,8 @@ When nil, display its preview on a separate overlay line instead."
   "Face for the source of the formula being edited.")
 
 (cl-defstruct (org-typora-math--item (:constructor org-typora-math--item-create))
-  overlay source block key svg attempted error)
+  overlay source block key svg attempted error
+  image width image-svg image-scale)
 
 (defvar org-typora-math-mode nil)
 (defvar-local org-typora-math--items nil)
@@ -113,15 +114,28 @@ When nil, display its preview on a separate overlay line instead."
             (< (point) (overlay-end ov)))))
    org-typora-math--items))
 
-(defun org-typora-math--image (item)
-  "Create an image descriptor for ITEM's last successful rendering."
+(defun org-typora-math--image-of (item)
+  "Return the image descriptor of ITEM's last successful rendering.
+Reuse the stored descriptor until the SVG or `org-typora-math-scale' changes."
   (when-let* ((svg (org-typora-math--item-svg item)))
-    (create-image svg 'svg t :ascent 'center
-                  :scale org-typora-math-scale)))
+    (unless (and (org-typora-math--item-image item)
+                 (eq svg (org-typora-math--item-image-svg item))
+                 (eql org-typora-math-scale (org-typora-math--item-image-scale item)))
+      (setf (org-typora-math--item-image item)
+            (create-image svg 'svg t :ascent 'center :scale org-typora-math-scale)
+            (org-typora-math--item-width item) nil
+            (org-typora-math--item-image-svg item) svg
+            (org-typora-math--item-image-scale item) org-typora-math-scale))
+    (org-typora-math--item-image item)))
 
-(defun org-typora-math--panel (image)
-  "Return a centered overlay line displaying IMAGE."
-  (let ((width (car (image-size image t))))
+(defun org-typora-math--width (item image)
+  "Return the pixel width of IMAGE, stored in ITEM after the first call."
+  (or (org-typora-math--item-width item)
+      (setf (org-typora-math--item-width item) (car (image-size image t)))))
+
+(defun org-typora-math--panel (item image)
+  "Return a centered overlay line displaying IMAGE of ITEM."
+  (let ((width (org-typora-math--width item image)))
     (concat "\n"
             (propertize " " 'display
                         `(space :align-to (- center (,(round (/ width 2))))))
@@ -197,47 +211,76 @@ Return non-nil when a popup was shown."
             t)
         (error (org-typora-math--hide-popup) nil)))))
 
+(defun org-typora-math--paint-item (item)
+  "Set the overlay properties of ITEM.
+The popup of the active inline formula is handled by
+`org-typora-math--update-popup'."
+  (let ((ov (org-typora-math--item-overlay item)))
+    (when (overlay-buffer ov)
+      (let* ((active (eq item org-typora-math--active))
+             (block (org-typora-math--item-block item))
+             (image (org-typora-math--image-of item)))
+        (overlay-put ov 'display nil)
+        (overlay-put ov 'before-string nil)
+        (overlay-put ov 'after-string nil)
+        (overlay-put ov 'face
+                     (and active (if block 'org-typora-math-source
+                                   '(:inherit org-typora-math-source :extend nil))))
+        (overlay-put ov 'help-echo (org-typora-math--item-error item))
+        (when image
+          (cond
+           ((and active block)
+            (overlay-put ov 'after-string (org-typora-math--panel item image)))
+           (active)
+           (block
+            ;; Emacs does not recursively interpret image display properties
+            ;; inside a replacement display string.  Keep the image directly
+            ;; on the overlay and the alignment in a separate before-string.
+            (overlay-put ov 'before-string
+                         (propertize " " 'display
+                                     `(space :align-to
+                                             (- center (,(round (/ (org-typora-math--width item image) 2)))))))
+            (overlay-put ov 'display image))
+           (t (overlay-put ov 'display image))))))))
+
+(defun org-typora-math--update-popup ()
+  "Move or hide the popup of the active inline formula.
+When no popup can be shown, fall back to an overlay line below the formula."
+  (let* ((item org-typora-math--active)
+         (image (and item (not (org-typora-math--item-block item))
+                     (org-typora-math--image-of item)))
+         (ov (and image (org-typora-math--item-overlay item)))
+         (shown (and image (overlay-buffer ov)
+                     (org-typora-math--popup image (overlay-start ov)))))
+    (when (and image (overlay-buffer ov))
+      (if shown
+          (when (overlay-get ov 'after-string)
+            (overlay-put ov 'after-string nil))
+        (unless (overlay-get ov 'after-string)
+          (overlay-put ov 'after-string (org-typora-math--panel item image)))))
+    (unless shown (org-typora-math--hide-popup))))
+
 (defun org-typora-math--paint ()
-  "Update overlays and the popup without modifying the buffer."
-  (let (popup-shown)
-   (dolist (item org-typora-math--items)
-    (let* ((ov (org-typora-math--item-overlay item))
-           (active (eq item org-typora-math--active))
-           (block (org-typora-math--item-block item))
-           (image (org-typora-math--image item)))
-      (overlay-put ov 'display nil)
-      (overlay-put ov 'before-string nil)
-      (overlay-put ov 'after-string nil)
-      (overlay-put ov 'face
-                   (and active (if block 'org-typora-math-source
-                                 '(:inherit org-typora-math-source :extend nil))))
-      (overlay-put ov 'help-echo (org-typora-math--item-error item))
-      (when image
-        (cond
-         (active
-          (unless (setq popup-shown
-                        (and (not block)
-                             (org-typora-math--popup image (overlay-start ov))))
-            (overlay-put ov 'after-string (org-typora-math--panel image))))
-         (block
-          ;; Emacs does not recursively interpret image display properties
-          ;; inside a replacement display string.  Keep the image directly
-          ;; on the overlay and the alignment in a separate before-string.
-          (overlay-put ov 'before-string
-                       (propertize " " 'display
-                                   `(space :align-to
-                                           (- center (,(round (/ (car (image-size image t)) 2)))))))
-          (overlay-put ov 'display image))
-         (t (overlay-put ov 'display image))))))
-   (unless popup-shown (org-typora-math--hide-popup))))
+  "Update all overlays and the popup without modifying the buffer."
+  (mapc #'org-typora-math--paint-item org-typora-math--items)
+  (org-typora-math--update-popup))
+
+(defun org-typora-math--repaint-item (item)
+  "Repaint ITEM, and the popup when ITEM is the active formula."
+  (org-typora-math--paint-item item)
+  (when (eq item org-typora-math--active)
+    (org-typora-math--update-popup)))
 
 (defun org-typora-math--post-command ()
   "Reveal the formula entered by the cursor and conceal the previous one."
   (when org-typora-math-mode
-    (let ((active (org-typora-math--at-point)))
-      (unless (eq active org-typora-math--active)
+    (let ((active (org-typora-math--at-point))
+          (previous org-typora-math--active))
+      (unless (eq active previous)
         (setq org-typora-math--active active)
-        (org-typora-math--paint)))))
+        (when previous (org-typora-math--paint-item previous))
+        (when active (org-typora-math--paint-item active))
+        (org-typora-math--update-popup)))))
 
 (defun org-typora-math--window-change (&rest _)
   "Reposition the popup after scrolling or changing windows.
@@ -247,7 +290,7 @@ Also start a refresh that was postponed while the buffer was hidden."
       (setq org-typora-math--pending nil)
       (org-typora-math--schedule))
     (if (eq (window-buffer (selected-window)) (current-buffer))
-        (org-typora-math--paint)
+        (org-typora-math--update-popup)
       (org-typora-math--hide-popup))))
 
 (defun org-typora-math--schedule ()
@@ -415,7 +458,7 @@ Then start the next queued job."
             (org-typora-math--item-error item) nil)))
   (delete-directory org-typora-math--directory t)
   (setq org-typora-math--directory nil)
-  (org-typora-math--paint))
+  (org-typora-math--repaint-item item))
 
 (defun org-typora-math--start-stage (item key command output next)
   "Run COMMAND for ITEM and KEY, requiring OUTPUT before calling NEXT.
@@ -476,7 +519,7 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
               (setf (org-typora-math--item-svg item) cached
                     (org-typora-math--item-attempted item) key
                     (org-typora-math--item-error item) nil)
-              (org-typora-math--paint))
+              (org-typora-math--repaint-item item))
           (setq org-typora-math--directory (make-temp-file "org-typora-math-" t))
           (with-temp-file (expand-file-name "preview.tex" org-typora-math--directory)
             (insert document))

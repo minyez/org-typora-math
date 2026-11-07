@@ -3,6 +3,19 @@
 (require 'ert)
 (require 'org-typora-math)
 
+;; Painting is stubbed unless a test binds this variable to non-nil.
+(defvar org-typora-math-test--real-paint nil)
+(defconst org-typora-math-test--paint-functions
+  (mapcar (lambda (name) (cons name (symbol-function name)))
+          '(org-typora-math--paint org-typora-math--paint-item
+            org-typora-math--update-popup)))
+
+(defun org-typora-math-test--stub (name)
+  "Return a replacement for NAME that paints only in painting tests."
+  (let ((original (cdr (assq name org-typora-math-test--paint-functions))))
+    (lambda (&rest args)
+      (when org-typora-math-test--real-paint (apply original args)))))
+
 (defmacro org-typora-math-test--buffer (text &rest body)
   "Evaluate BODY in an Org buffer containing TEXT, without GUI painting."
   (declare (indent 1))
@@ -12,9 +25,12 @@
            (org-mode)
            (insert ,text)
            (goto-char (point-min))
-           (cl-letf (((symbol-function 'org-typora-math--paint) #'ignore)
-                     ((symbol-function 'org-typora-math--paint-item) #'ignore)
-                     ((symbol-function 'org-typora-math--update-popup) #'ignore))
+           (cl-letf (((symbol-function 'org-typora-math--paint)
+                      (org-typora-math-test--stub 'org-typora-math--paint))
+                     ((symbol-function 'org-typora-math--paint-item)
+                      (org-typora-math-test--stub 'org-typora-math--paint-item))
+                     ((symbol-function 'org-typora-math--update-popup)
+                      (org-typora-math-test--stub 'org-typora-math--update-popup)))
              (unwind-protect
                  (progn (org-typora-math-mode 1)
                         (org-typora-math--cancel-timer 'org-typora-math--timer)
@@ -273,5 +289,84 @@
           (should (= timers (length timer-list)))
           (should-not (get-buffer " *org-typora-math-log*")))
       (kill-buffer buffer))))
+
+(defmacro org-typora-math-test--painting (text &rest body)
+  "Run BODY with real painting in a displayed buffer containing TEXT.
+Every item gets a fake SVG, and `image-size' works without a display."
+  (declare (indent 1))
+  `(org-typora-math-test--buffer ,text
+     (let ((org-typora-math-test--real-paint t)
+           (previous (window-buffer (selected-window))))
+       (cl-letf (((symbol-function 'image-size) (lambda (&rest _) '(100 . 20))))
+         (unwind-protect
+             (progn
+               (set-window-buffer (selected-window) (current-buffer))
+               (org-typora-math--collect)
+               (dolist (item org-typora-math--items)
+                 (setf (org-typora-math--item-svg item) (copy-sequence "<svg/>")))
+               (org-typora-math--paint)
+               ,@body)
+           (set-window-buffer (selected-window) previous))))))
+
+(defmacro org-typora-math-test--count-overlay-puts (&rest body)
+  "Run BODY and return the list of overlays passed to `overlay-put'."
+  `(let (puts)
+     (let ((recorder (lambda (overlay &rest _) (push overlay puts))))
+       (advice-add 'overlay-put :before recorder)
+       (unwind-protect (progn ,@body)
+         (advice-remove 'overlay-put recorder)))
+     puts))
+
+(ert-deftest org-typora-math-scrolling-does-not-touch-overlays ()
+  (org-typora-math-test--painting "$a$ and $b$ and $c$"
+    (goto-char 2)
+    (org-typora-math--post-command)
+    (should org-typora-math--active)
+    (should (null (org-typora-math-test--count-overlay-puts
+                   (org-typora-math--window-change)
+                   (org-typora-math--window-change)
+                   (run-hook-with-args 'window-scroll-functions
+                                       (selected-window) 1))))))
+
+(ert-deftest org-typora-math-moving-point-repaints-two-formulas ()
+  (org-typora-math-test--painting "$a$ and $b$ and $c$"
+    (let ((overlays (mapcar #'org-typora-math--item-overlay org-typora-math--items)))
+      (goto-char 2)
+      (org-typora-math--post-command)
+      (goto-char 10)
+      (let ((puts (org-typora-math-test--count-overlay-puts
+                   (org-typora-math--post-command))))
+        (should puts)
+        (should (equal (list (nth 0 overlays) (nth 1 overlays))
+                       (sort (delete-dups puts)
+                             (lambda (x y) (< (overlay-start x) (overlay-start y))))))))))
+
+(ert-deftest org-typora-math-reuses-image-descriptors ()
+  (org-typora-math-test--painting "$a$ and $b$"
+    (let ((creations 0) (item (car org-typora-math--items)))
+      (cl-letf* ((create (symbol-function 'create-image))
+                 ((symbol-function 'create-image)
+                  (lambda (&rest args) (cl-incf creations) (apply create args))))
+        (setq creations 0)
+        (org-typora-math--paint)
+        (org-typora-math--paint)
+        (should (= 0 creations))
+        (setf (org-typora-math--item-svg item) (copy-sequence "<svg/>"))
+        (org-typora-math--paint)
+        (should (= 1 creations))
+        (let ((org-typora-math-scale 3.0))
+          (org-typora-math--paint)
+          (should (= 3 creations))
+          (should (eql 3.0 (plist-get (cdr (org-typora-math--item-image item))
+                                      :scale))))))))
+
+(ert-deftest org-typora-math-finished-compile-repaints-one-formula ()
+  (org-typora-math-test--painting "$a$ and $b$"
+    (let* ((item (cadr org-typora-math--items))
+           (puts (org-typora-math-test--count-overlay-puts
+                  (org-typora-math--repaint-item item))))
+      (should puts)
+      (should (equal (list (org-typora-math--item-overlay item))
+                     (delete-dups puts))))))
 
 ;;; org-typora-math-test.el ends here
