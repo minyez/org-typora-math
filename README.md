@@ -53,6 +53,7 @@ Add to `config.el`:
 (use-package! org-typora-math
   :commands (org-typora-math-mode
              org-typora-math-refresh
+             org-typora-math-clear-cache
              org-typora-math-show-log))
 ```
 
@@ -115,6 +116,71 @@ The preamble is the same as for native Org previews:
 - the `#+LATEX_HEADER:` lines of the buffer (`#+LATEX_HEADER_EXTRA:` does not apply)
 
 If the `dvisvgm` entry of `org-preview-latex-process-alist` has a `:latex-header` value, that value replaces all of the above.
+
+### Configuration examples
+
+Vanilla Emacs with `use-package`:
+
+```elisp
+(use-package org-typora-math
+  :load-path "/path/to/org-typora-math"
+  :hook (org-mode . org-typora-math-mode)
+  :custom
+  (org-typora-math-scale 1.8)
+  (org-typora-math-idle-delay 1.0))
+```
+
+Doom Emacs, in `config.el` (use `setq!` for custom variables):
+
+```elisp
+(after! org-typora-math
+  (setq! org-typora-math-scale 1.8
+         org-typora-math-display-center 'fill-column))
+(add-hook 'org-mode-hook #'org-typora-math-mode t)
+```
+
+Programs that Emacs cannot find in `exec-path`, for example in a TeX Live or Homebrew location:
+
+```elisp
+(setq org-typora-math-latex-program "/Library/TeX/texbin/latex"
+      org-typora-math-dvisvgm-program "/opt/homebrew/bin/dvisvgm")
+```
+
+Slow machine or a large note: wait longer after edits and allow more time for each compiler stage.
+
+```elisp
+(setq org-typora-math-idle-delay 1.5
+      org-typora-math-process-timeout 30)
+```
+
+Use the disk cache only for the current Emacs session, or keep it in another place:
+
+```elisp
+(setq org-typora-math-cache-directory nil)  ; memory only
+(setq org-typora-math-cache-directory
+      (expand-file-name "org-typora-math/" (or (getenv "XDG_CACHE_HOME") "~/.cache")))
+```
+
+Display previews at a fixed column, and show the preview of inline formulas below the source instead of in a popup (useful in a terminal or if child frames cause trouble):
+
+```elisp
+(setq org-typora-math-display-center 40
+      org-typora-math-inline-popup nil)
+```
+
+Different settings for one project, in `.dir-locals.el` at the project root:
+
+```elisp
+((org-mode . ((org-typora-math-scale . 1.5)
+              (org-typora-math-latex-program . "/usr/local/texlive/2025/bin/latex"))))
+```
+
+Change the look of the source of the formula that you edit:
+
+```elisp
+(custom-set-faces
+ '(org-typora-math-source ((t (:background "#fff8e1" :extend t)))))
+```
 
 ## How it works
 
