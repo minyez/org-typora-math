@@ -1,6 +1,6 @@
 EMACS ?= emacs
 
-.PHONY: test compile clean
+.PHONY: test compile bench clean
 
 test:
 	$(EMACS) --batch -Q -L . --eval '(setq load-prefer-newer t)' \
@@ -9,6 +9,9 @@ test:
 compile:
 	$(EMACS) --batch -Q -L . --eval '(setq byte-compile-error-on-warn t)' \
 		-f batch-byte-compile org-typora-math.el
+
+bench:
+	$(EMACS) --batch -Q -L . --eval '(setq load-prefer-newer t)' -l test/bench.el
 
 clean:
 	rm -f org-typora-math.elc

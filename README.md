@@ -130,7 +130,9 @@ If the `dvisvgm` entry of `org-preview-latex-process-alist` has a `:latex-header
 - Each formula is a separate document. Equation numbers start again at each formula, and references between formulas do not work.
 - Only DVI output is supported. You cannot use XeLaTeX or LuaLaTeX with PDF output.
 - Compilation runs in a temporary directory. Use absolute paths for files that the preamble loads, for example with `\input`.
-- Compilation is asynchronous, but the buffer parse after each pause is not. In long documents with many formulas, the first pass can be slow.
+- Compilation is asynchronous, but the buffer scan after each pause is not. The first scan of a long document with many formulas can be slow, because Org builds its element cache. Later scans are faster.
+- A buffer that no window shows does not compile. It starts when you first show it, so a background buffer may need a short time to show its previews.
+- The preamble is cached, and the contents of a `#+SETUPFILE` are not watched. After you edit a setup file, run `org-typora-math-refresh`.
 - The cache has no size limit and keeps each good SVG version while you edit. To clear it, disable the mode or run `org-typora-math-refresh`.
 
 ### Display

@@ -72,6 +72,8 @@ When nil, display its preview on a separate overlay line instead."
 (defvar-local org-typora-math--popup-buffer nil)
 (defvar-local org-typora-math--restore-fragtog nil)
 (defvar-local org-typora-math--log nil)
+(defvar-local org-typora-math--preamble nil
+  "Cons of the inputs and the text of the latest snippet preamble.")
 (defvar-local org-typora-math--pending nil
   "Non-nil when a refresh was skipped because the buffer was not on screen.")
 
@@ -321,61 +323,121 @@ Also start a refresh that was postponed while the buffer was hidden."
           (overlay-put ov 'display nil))))
     (org-typora-math--schedule)))
 
+(defconst org-typora-math--math-regexp
+  "\\$\\|\\\\[([]\\|^[ \t]*\\\\begin{[A-Za-z0-9*]+}"
+  "Regexp matching the possible starts of a LaTeX fragment or environment.
+This is the regexp used by `org-format-latex'.")
+
+(defconst org-typora-math--opaque-elements
+  '(src-block example-block export-block comment-block fixed-width comment)
+  "Element types that cannot contain LaTeX fragments.")
+
+(defun org-typora-math--scan ()
+  "Return the math elements in the buffer as (BEGIN SOURCE BLOCK) lists.
+Search like `org-format-latex' does, so that Org's element cache parses
+only the matched places."
+  (let (found)
+    (save-excursion
+      (save-restriction
+        (widen)
+        (goto-char (point-min))
+        (while (re-search-forward org-typora-math--math-regexp nil t)
+          (let* ((context (save-excursion
+                            (goto-char (match-beginning 0))
+                            (org-element-context)))
+                 (type (org-element-type context)))
+            (cond
+             ((memq type '(latex-fragment latex-environment))
+              (let* ((environment (eq type 'latex-environment))
+                     (source (string-trim-right
+                              (org-element-property :value context)))
+                     ;; Affiliated keywords such as #+NAME: precede the
+                     ;; environment.
+                     (begin (org-element-property
+                             (if environment :post-affiliated :begin) context)))
+                ;; Org also parses commands such as \ref{x} as LaTeX
+                ;; fragments.  Preview only math, like `org-latex-preview'.
+                (when (or environment
+                          (string-match-p "\\`\\(?:\\$\\|\\\\[[(]\\)" source))
+                  (push (list begin source
+                              (or environment
+                                  (string-prefix-p "\\[" source)
+                                  (string-prefix-p "$$" source)))
+                        found)))
+              (goto-char (max (point) (org-element-property :end context))))
+             ((memq type org-typora-math--opaque-elements)
+              (goto-char (max (point) (org-element-property :end context)))))))))
+    (nreverse found)))
+
 (defun org-typora-math--collect ()
   "Reconcile tracked formulas with Org's syntax tree.
 Reuse overlays at the same start position, preserving the last good image."
   (let ((old org-typora-math--items) items)
-    (save-restriction
-      (widen)
-      (org-element-map (org-element-parse-buffer) '(latex-fragment latex-environment)
-        (lambda (element)
-          (let* ((environment (eq (org-element-type element) 'latex-environment))
-                 (source (string-trim-right (org-element-property :value element)))
-                 ;; Affiliated keywords such as #+NAME: precede the environment.
-                 (begin (org-element-property
-                         (if environment :post-affiliated :begin) element))
-                 (end (+ begin (length source)))
-                 (block (or environment
-                            (string-prefix-p "\\[" source)
-                            (string-prefix-p "$$" source))))
-            ;; Org also parses commands such as \ref{x} as LaTeX fragments.
-            ;; Preview only math, like `org-latex-preview'.
-            (when (or environment
-                      (string-match-p "\\`\\(?:\\$\\|\\\\[[(]\\)" source))
-              (let ((item (cl-find-if
-                           (lambda (it)
-                             (= begin (overlay-start (org-typora-math--item-overlay it))))
-                           old)))
-                (unless item
-                  (setq item (org-typora-math--item-create
-                              :overlay (make-overlay begin end nil nil t))))
-                (setq old (delq item old))
-                (move-overlay (org-typora-math--item-overlay item) begin end)
-                (overlay-put (org-typora-math--item-overlay item) 'priority 20)
-                (setf (org-typora-math--item-source item) source
-                      (org-typora-math--item-block item) block)
-                (push item items)))))))
+    (pcase-dolist (`(,begin ,source ,block) (org-typora-math--scan))
+      (let ((item (cl-find-if
+                   (lambda (it)
+                     (= begin (overlay-start (org-typora-math--item-overlay it))))
+                   old))
+            (end (+ begin (length source))))
+        (unless item
+          (setq item (org-typora-math--item-create
+                      :overlay (make-overlay begin end nil nil t))))
+        (setq old (delq item old))
+        (move-overlay (org-typora-math--item-overlay item) begin end)
+        (overlay-put (org-typora-math--item-overlay item) 'priority 20)
+        (setf (org-typora-math--item-source item) source
+              (org-typora-math--item-block item) block)
+        (push item items)))
     (dolist (item old) (delete-overlay (org-typora-math--item-overlay item)))
     (setq org-typora-math--items (nreverse items)
           org-typora-math--active (org-typora-math--at-point))))
 
-(defun org-typora-math--preamble ()
-  "Build the same snippet preamble as Org's LaTeX preview."
-  (or (plist-get (cdr (assq 'dvisvgm org-preview-latex-process-alist)) :latex-header)
-      (org-latex-make-preamble
-       (org-export-get-environment (org-export-get-backend 'latex))
-       org-format-latex-header 'snippet)))
+(defun org-typora-math--preamble-key ()
+  "Return a value that changes when the snippet preamble may change."
+  (let (lines)
+    (save-excursion
+      (save-restriction
+        (widen)
+        (goto-char (point-min))
+        (let ((case-fold-search t))
+          (while (re-search-forward
+                  "^[ \t]*#\\+\\(?:latex_header\\(?:_extra\\)?\\|setupfile\\|latex_class\\(?:_options\\)?\\):.*$"
+                  nil t)
+            (push (match-string-no-properties 0) lines)))))
+    (list lines org-format-latex-header
+          org-latex-default-packages-alist org-latex-packages-alist
+          org-latex-classes org-latex-default-class
+          (plist-get (cdr (assq 'dvisvgm org-preview-latex-process-alist))
+                     :latex-header))))
 
-(defun org-typora-math--document (item preamble)
-  "Build a TeX document for ITEM using PREAMBLE and the current text color."
+(defun org-typora-math--preamble ()
+  "Build the same snippet preamble as Org's LaTeX preview.
+Keep only the latest preamble and rebuild it when its inputs change.
+The contents of a `#+SETUPFILE' are not watched; run
+`org-typora-math-refresh' after editing one."
+  (let ((key (org-typora-math--preamble-key)))
+    (unless (equal key (car org-typora-math--preamble))
+      (setq org-typora-math--preamble
+            (cons key
+                  (or (plist-get (cdr (assq 'dvisvgm org-preview-latex-process-alist))
+                                 :latex-header)
+                      (org-latex-make-preamble
+                       (org-export-get-environment (org-export-get-backend 'latex))
+                       org-format-latex-header 'snippet)))))
+    (cdr org-typora-math--preamble)))
+
+(defun org-typora-math--color ()
+  "Return the default foreground color as a comma-separated RGB string."
   (let* ((name (face-foreground 'default nil t))
          (rgb (or (and name (color-name-to-rgb name)) '(0 0 0))))
-    (concat preamble "\n\\usepackage{color}\n\\begin{document}\n"
-            "\\definecolor{previewfg}{rgb}{"
-            (mapconcat (lambda (v) (format "%.5f" v)) rgb ",")
-            "}\n\\color{previewfg}\n"
-            (org-typora-math--item-source item)
-            "%\n\\end{document}\n")))
+    (mapconcat (lambda (v) (format "%.5f" v)) rgb ",")))
+
+(defun org-typora-math--document (item preamble color)
+  "Build a TeX document for ITEM using PREAMBLE and the text COLOR."
+  (concat preamble "\n\\usepackage{color}\n\\begin{document}\n"
+          "\\definecolor{previewfg}{rgb}{" color "}\n\\color{previewfg}\n"
+          (org-typora-math--item-source item)
+          "%\n\\end{document}\n"))
 
 (defun org-typora-math--order-jobs (jobs)
   "Sort JOBS: the active formula, then formulas in the window, then the rest."
@@ -396,26 +458,33 @@ Reuse overlays at the same start position, preserving the last good image."
       (let ((ranked (mapcar (lambda (job) (cons (rank job) job)) jobs)))
         (mapcar #'cdr (sort ranked (lambda (a b) (< (car a) (car b)))))))))
 
+(defun org-typora-math--build-jobs ()
+  "Set each item's key, use cached images, and return jobs for the rest."
+  (let ((preamble (org-typora-math--preamble))
+        (color (org-typora-math--color))
+        jobs)
+    (dolist (item org-typora-math--items)
+      (let* ((document (org-typora-math--document item preamble color))
+             (key (secure-hash 'sha256
+                               (concat org-typora-math-latex-program "\0"
+                                       org-typora-math-dvisvgm-program "\0"
+                                       document)))
+             (cached (gethash key org-typora-math--cache)))
+        (setf (org-typora-math--item-key item) key)
+        (cond
+         (cached (setf (org-typora-math--item-svg item) cached
+                       (org-typora-math--item-error item) nil))
+         ((not (equal key (org-typora-math--item-attempted item)))
+          (push (list item key document) jobs)))))
+    (nreverse jobs)))
+
 (defun org-typora-math--refresh ()
   "Collect formulas and enqueue asynchronous compilations."
   (condition-case err
       (progn
         (org-typora-math--collect)
-        (let ((preamble (org-typora-math--preamble)) jobs)
-          (dolist (item org-typora-math--items)
-            (let* ((document (org-typora-math--document item preamble))
-                   (key (secure-hash 'sha256
-                                     (concat org-typora-math-latex-program "\0"
-                                             org-typora-math-dvisvgm-program "\0"
-                                             document)))
-                   (cached (gethash key org-typora-math--cache)))
-              (setf (org-typora-math--item-key item) key)
-              (cond
-               (cached (setf (org-typora-math--item-svg item) cached
-                             (org-typora-math--item-error item) nil))
-               ((not (equal key (org-typora-math--item-attempted item)))
-                (push (list item key document) jobs)))))
-          (setq org-typora-math--queue (org-typora-math--order-jobs (nreverse jobs))))
+        (setq org-typora-math--queue
+              (org-typora-math--order-jobs (org-typora-math--build-jobs)))
         (org-typora-math--paint)
         (org-typora-math--next))
     (error (message "Org Typora math: %s" (error-message-string err)))))
@@ -545,6 +614,7 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
   (org-typora-math--cancel-timer 'org-typora-math--timer)
   (org-typora-math--cancel-job)
   (clrhash org-typora-math--cache)
+  (setq org-typora-math--preamble nil)
   (dolist (item org-typora-math--items)
     (setf (org-typora-math--item-attempted item) nil))
   (org-typora-math--refresh))
@@ -563,7 +633,7 @@ Process cached and synchronously failed jobs in a loop, not by recursion."
   (dolist (item org-typora-math--items)
     (delete-overlay (org-typora-math--item-overlay item)))
   (setq org-typora-math--items nil org-typora-math--active nil
-        org-typora-math--cache nil)
+        org-typora-math--cache nil org-typora-math--preamble nil)
   (when (frame-live-p org-typora-math--frame)
     (delete-frame org-typora-math--frame))
   (setq org-typora-math--frame nil)

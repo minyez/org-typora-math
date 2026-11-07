@@ -369,4 +369,33 @@ Every item gets a fake SVG, and `image-size' works without a display."
       (should (equal (list (org-typora-math--item-overlay item))
                      (delete-dups puts))))))
 
+(ert-deftest org-typora-math-ignores-dollar-in-text-and-code ()
+  (org-typora-math-test--buffer
+      "It costs 5 \\$ or so.\n\n: fixed $a$\n\n# comment $b$\n\nReal \\(c\\) and $d$.\n"
+    (org-typora-math--collect)
+    (should (equal '("\\(c\\)" "$d$")
+                   (mapcar #'org-typora-math--item-source org-typora-math--items)))))
+
+(ert-deftest org-typora-math-caches-preamble ()
+  (org-typora-math-test--buffer "#+LATEX_HEADER: \\newcommand{\\a}{1}\n\n$\\a$\n"
+    (let ((builds 0)
+          (make (symbol-function 'org-latex-make-preamble)))
+      (cl-letf (((symbol-function 'org-latex-make-preamble)
+                 (lambda (&rest args) (cl-incf builds) (apply make args))))
+        (let ((first (org-typora-math--preamble)))
+          (should (equal first (org-typora-math--preamble)))
+          (should (= 1 builds))
+          ;; Editing text outside the header lines keeps the preamble.
+          (goto-char (point-max))
+          (insert "more $b$\n")
+          (org-typora-math--preamble)
+          (should (= 1 builds))
+          (goto-char (point-min))
+          (insert "#+LATEX_HEADER: \\newcommand{\\b}{2}\n")
+          (should (string-match-p "newcommand{\\\\b}" (org-typora-math--preamble)))
+          (should (= 2 builds))
+          (let ((org-format-latex-header (concat org-format-latex-header "\n%")))
+            (org-typora-math--preamble)
+            (should (= 3 builds))))))))
+
 ;;; org-typora-math-test.el ends here
