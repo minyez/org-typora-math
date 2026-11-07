@@ -37,6 +37,39 @@
         (should (equal (org-typora-math--item-source item)
                        (buffer-substring-no-properties (overlay-start ov) (overlay-end ov))))))))
 
+(ert-deftest org-typora-math-skips-affiliated-keywords ()
+  (org-typora-math-test--buffer
+      "#+name: eq:1\n\\begin{equation}\nE=mc^2\n\\end{equation}\n"
+    (org-typora-math--collect)
+    (let ((ov (org-typora-math--item-overlay (car org-typora-math--items))))
+      (should (equal "\\begin{equation}\nE=mc^2\n\\end{equation}"
+                     (buffer-substring-no-properties
+                      (overlay-start ov) (overlay-end ov)))))))
+
+(ert-deftest org-typora-math-ignores-non-math-fragments ()
+  (org-typora-math-test--buffer "See \\cite{key}, \\ref{fig:1} and \\textbf{x}, $a$.\n"
+    (org-typora-math--collect)
+    (should (equal '("$a$")
+                   (mapcar #'org-typora-math--item-source org-typora-math--items)))))
+
+(ert-deftest org-typora-math-recreates-killed-log ()
+  (org-typora-math-test--buffer "$a$"
+    (kill-buffer org-typora-math--log)
+    (org-typora-math--refresh)
+    (org-typora-math-test--wait)
+    (should-not (org-typora-math--item-error (car org-typora-math--items)))
+    (should (buffer-live-p org-typora-math--log))))
+
+(ert-deftest org-typora-math-many-start-failures-do-not-recurse ()
+  (org-typora-math-test--buffer
+      (mapconcat (lambda (i) (format "$x_{%d}$\n\n" i)) (number-sequence 1 1000) "")
+    (let ((org-typora-math-latex-program "/nonexistent/latex")
+          (inhibit-message t))
+      (org-typora-math--refresh))
+    (should-not org-typora-math--queue)
+    (should-not org-typora-math--directory)
+    (should (cl-every #'org-typora-math--item-error org-typora-math--items))))
+
 (ert-deftest org-typora-math-reuses-last-good-image ()
   (org-typora-math-test--buffer "$a$\n"
     (org-typora-math--collect)

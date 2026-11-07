@@ -274,25 +274,32 @@ Reuse overlays at the same start position, preserving the last good image."
       (widen)
       (org-element-map (org-element-parse-buffer) '(latex-fragment latex-environment)
         (lambda (element)
-          (let* ((source (string-trim-right (org-element-property :value element)))
-                 (begin (org-element-property :begin element))
+          (let* ((environment (eq (org-element-type element) 'latex-environment))
+                 (source (string-trim-right (org-element-property :value element)))
+                 ;; Affiliated keywords such as #+NAME: precede the environment.
+                 (begin (org-element-property
+                         (if environment :post-affiliated :begin) element))
                  (end (+ begin (length source)))
-                 (block (or (eq (org-element-type element) 'latex-environment)
+                 (block (or environment
                             (string-prefix-p "\\[" source)
-                            (string-prefix-p "$$" source)))
-                 (item (cl-find-if
-                        (lambda (it)
-                          (= begin (overlay-start (org-typora-math--item-overlay it))))
-                        old)))
-            (unless item
-              (setq item (org-typora-math--item-create
-                          :overlay (make-overlay begin end nil nil t))))
-            (setq old (delq item old))
-            (move-overlay (org-typora-math--item-overlay item) begin end)
-            (overlay-put (org-typora-math--item-overlay item) 'priority 20)
-            (setf (org-typora-math--item-source item) source
-                  (org-typora-math--item-block item) block)
-            (push item items)))))
+                            (string-prefix-p "$$" source))))
+            ;; Org also parses commands such as \ref{x} as LaTeX fragments.
+            ;; Preview only math, like `org-latex-preview'.
+            (when (or environment
+                      (string-match-p "\\`\\(?:\\$\\|\\\\[[(]\\)" source))
+              (let ((item (cl-find-if
+                           (lambda (it)
+                             (= begin (overlay-start (org-typora-math--item-overlay it))))
+                           old)))
+                (unless item
+                  (setq item (org-typora-math--item-create
+                              :overlay (make-overlay begin end nil nil t))))
+                (setq old (delq item old))
+                (move-overlay (org-typora-math--item-overlay item) begin end)
+                (overlay-put (org-typora-math--item-overlay item) 'priority 20)
+                (setf (org-typora-math--item-source item) source
+                      (org-typora-math--item-block item) block)
+                (push item items)))))))
     (dolist (item old) (delete-overlay (org-typora-math--item-overlay item)))
     (setq org-typora-math--items (nreverse items)
           org-typora-math--active (org-typora-math--at-point))))
@@ -350,8 +357,20 @@ Reuse overlays at the same start position, preserving the last good image."
        (memq item org-typora-math--items)
        (equal key (org-typora-math--item-key item))))
 
+(defun org-typora-math--log-buffer ()
+  "Return the compilation log buffer, creating it again if it was killed."
+  (unless (buffer-live-p org-typora-math--log)
+    (setq org-typora-math--log (generate-new-buffer " *org-typora-math-log*")))
+  org-typora-math--log)
+
 (defun org-typora-math--finish (item key &optional error-message)
-  "Finish ITEM with KEY, optionally recording ERROR-MESSAGE."
+  "Finish ITEM with KEY, optionally recording ERROR-MESSAGE.
+Then start the next queued job."
+  (org-typora-math--complete item key error-message)
+  (org-typora-math--next))
+
+(defun org-typora-math--complete (item key &optional error-message)
+  "Record the result of ITEM with KEY, optionally ERROR-MESSAGE, and clean up."
   (org-typora-math--cancel-timer 'org-typora-math--timeout)
   (setq org-typora-math--process nil)
   (if error-message
@@ -369,22 +388,26 @@ Reuse overlays at the same start position, preserving the last good image."
             (org-typora-math--item-error item) nil)))
   (delete-directory org-typora-math--directory t)
   (setq org-typora-math--directory nil)
-  (org-typora-math--paint)
-  (org-typora-math--next))
+  (org-typora-math--paint))
 
 (defun org-typora-math--start-stage (item key command output next)
-  "Run COMMAND for ITEM and KEY, requiring OUTPUT before calling NEXT."
+  "Run COMMAND for ITEM and KEY, requiring OUTPUT before calling NEXT.
+NEXT returns non-nil when it started or finished work that continues the queue.
+Return non-nil when the process started.  On a synchronous failure, record
+the error and return nil without starting the next job, so that
+`org-typora-math--next' can continue in its loop."
   (let ((owner (current-buffer))
         (generation org-typora-math--generation)
-        (default-directory org-typora-math--directory))
+        (default-directory org-typora-math--directory)
+        (log (org-typora-math--log-buffer)))
     (condition-case err
         (progn
-          (with-current-buffer org-typora-math--log
+          (with-current-buffer log
             (goto-char (point-max))
             (insert "\n$ " (mapconcat #'identity command " ") "\n"))
           (setq org-typora-math--process
                 (make-process
-                 :name "org-typora-math" :buffer org-typora-math--log
+                 :name "org-typora-math" :buffer log
                  :command command :connection-type 'pipe :noquery t
                  :sentinel
                  (lambda (process _event)
@@ -397,7 +420,7 @@ Reuse overlays at the same start position, preserving the last good image."
                          (if (and (zerop (process-exit-status process))
                                   (file-exists-p
                                    (expand-file-name output org-typora-math--directory)))
-                             (funcall next)
+                             (unless (funcall next) (org-typora-math--next))
                            (org-typora-math--finish item key
                                                     (format "%s failed" (car command))))))))))
           (setq org-typora-math--timeout
@@ -409,34 +432,40 @@ Reuse overlays at the same start position, preserving the last good image."
                        (when (org-typora-math--valid-job-p generation item key)
                          (set-process-sentinel org-typora-math--process #'ignore)
                          (delete-process org-typora-math--process)
-                         (org-typora-math--finish item key "Compilation timed out"))))))))
-      (error (org-typora-math--finish item key (error-message-string err))))))
+                         (org-typora-math--finish item key "Compilation timed out")))))))
+          t)
+      (error (org-typora-math--complete item key (error-message-string err))
+             nil))))
 
 (defun org-typora-math--next ()
-  "Start the next queued formula, with at most one process per buffer."
-  (when (and org-typora-math-mode (not org-typora-math--process)
-             org-typora-math--queue)
-    (pcase-let ((`(,item ,key ,document) (pop org-typora-math--queue)))
-      (if-let* ((cached (gethash key org-typora-math--cache)))
-          (progn
-            (setf (org-typora-math--item-svg item) cached)
-            (org-typora-math--paint)
-            (org-typora-math--next))
-        (setq org-typora-math--directory (make-temp-file "org-typora-math-" t))
-        (with-temp-file (expand-file-name "preview.tex" org-typora-math--directory)
-          (insert document))
-        (org-typora-math--start-stage
-         item key
-         (list org-typora-math-latex-program "-interaction=nonstopmode"
-               "-halt-on-error" "-no-shell-escape" "preview.tex")
-         "preview.dvi"
-         (lambda ()
-           (org-typora-math--start-stage
-            item key
-            (list org-typora-math-dvisvgm-program "--no-fonts" "--exact-bbox"
-                  "--bbox=min" "--output=preview.svg" "preview.dvi")
-            "preview.svg"
-            (lambda () (org-typora-math--finish item key)))))))))
+  "Start the next queued formula, with at most one process per buffer.
+Process cached and synchronously failed jobs in a loop, not by recursion."
+  (let (started)
+    (while (and (not started) org-typora-math-mode
+                (not org-typora-math--process) org-typora-math--queue)
+      (pcase-let ((`(,item ,key ,document) (pop org-typora-math--queue)))
+        (if-let* ((cached (gethash key org-typora-math--cache)))
+            (progn
+              (setf (org-typora-math--item-svg item) cached
+                    (org-typora-math--item-attempted item) key
+                    (org-typora-math--item-error item) nil)
+              (org-typora-math--paint))
+          (setq org-typora-math--directory (make-temp-file "org-typora-math-" t))
+          (with-temp-file (expand-file-name "preview.tex" org-typora-math--directory)
+            (insert document))
+          (setq started
+                (org-typora-math--start-stage
+                 item key
+                 (list org-typora-math-latex-program "-interaction=nonstopmode"
+                       "-halt-on-error" "-no-shell-escape" "preview.tex")
+                 "preview.dvi"
+                 (lambda ()
+                   (org-typora-math--start-stage
+                    item key
+                    (list org-typora-math-dvisvgm-program "--no-fonts" "--exact-bbox"
+                          "--bbox=min" "--output=preview.svg" "preview.dvi")
+                    "preview.svg"
+                    (lambda () (org-typora-math--finish item key) t))))))))))
 
 ;;;###autoload
 (defun org-typora-math-refresh ()
@@ -489,8 +518,8 @@ Reuse overlays at the same start position, preserving the last good image."
           (unless (executable-find program)
             (setq org-typora-math-mode nil)
             (user-error "Cannot find %s" program)))
-        (setq org-typora-math--cache (make-hash-table :test #'equal)
-              org-typora-math--log (generate-new-buffer " *org-typora-math-log*"))
+        (setq org-typora-math--cache (make-hash-table :test #'equal))
+        (org-typora-math--log-buffer)
         (setq org-typora-math--restore-fragtog (bound-and-true-p org-fragtog-mode))
         (when (and org-typora-math--restore-fragtog (fboundp 'org-fragtog-mode))
           (org-fragtog-mode -1))

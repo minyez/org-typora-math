@@ -1,43 +1,40 @@
 # org-typora-math
 
-Preview LaTeX formulas in Org mode with an editing interface inspired by [Typora](https://typora.io).
+Live LaTeX formula previews for Org mode, with an editing interface inspired by [Typora](https://typora.io).
 
-## What this package actually does
+- **Inline formula:** when point enters it, the source shows and a popup displays the preview.
+- **Display formula:** when point enters it, the source is highlighted and a centered preview shows below it.
+- **Live update:** when you stop typing, the formula compiles in the background and the preview updates.
+- **Outside a formula:** the image replaces the source on the screen.
 
-1. Move point into an inline formula to reveal its source and show a preview in a popup.
-2. Move point into a display formula to highlight its source and show a centered preview below it.
-3. Pause editing to compile the formula asynchronously and update the preview.
-4. Leave the formula to display the image in place of its source.
+The Org text and the undo history do not change.
 
 ## Requirements
 
-- Emacs 29.1 or later with a graphical interface and SVG support
+- Emacs 29.1 or later, graphical, with SVG support
 - Org 9.6 or later
 - `latex` and `dvisvgm` on `PATH`
 
-## Setup
+Tested with Emacs 31.1 and Org 9.8.7.
 
-The current version was tested with Emacs 31.1 and Org 9.8.7.
+## Installation
 
 <details>
 <summary>Vanilla Emacs</summary>
 
-In `init.el` add:
+Add to `init.el`, then restart Emacs:
 
 ```elisp
-(add-to-list 'load-path
-             (expand-file-name "/path/to/org-typora-math"))
+(add-to-list 'load-path "/path/to/org-typora-math")
 (require 'org-typora-math)
 ```
-
-Evaluate this configuration or restart Emacs.
 
 </details>
 
 <details>
 <summary>Doom Emacs</summary>
 
-In `packages.el` add:
+Add to `packages.el`:
 
 ```elisp
 (package! org-typora-math
@@ -50,7 +47,7 @@ In `packages.el` add:
            :files ("org-typora-math.el")))
 ```
 
-In `config.el` add:
+Add to `config.el`:
 
 ```elisp
 (use-package! org-typora-math
@@ -59,100 +56,105 @@ In `config.el` add:
              org-typora-math-show-log))
 ```
 
-Run `doom sync` in a terminal, then restart Emacs.
+Run `doom sync`, then restart Emacs.
 
 </details>
 
 ## Usage
 
 Run `M-x org-typora-math-mode` in an Org buffer.
-On first activation, the mode waits for the configured delay, then compiles all formulas in sequence, starting with the formula at point.
+After `org-typora-math-idle-delay` seconds, the mode compiles all formulas one at a time, starting with the formula at point.
 
-To enable it automatically in Org buffers, add:
+To enable the mode in all Org buffers:
 
 ```elisp
 (add-hook 'org-mode-hook #'org-typora-math-mode t)
 ```
 
-After `org-typora-math-idle-delay` seconds without edits, the package compiles changed formulas and updates their previews.
-Further edits cancel the current compilation. If compilation fails, the last valid image stays visible and the package records the error.
-Previews use overlays and child frames without changing the Org text or undo history.
+The final `t` adds the mode after other hook functions, so that it can turn off `org-fragtog-mode` (see [Compatibility](#compatibility)).
 
-## Customizable options
+While you edit:
+
+- A new edit stops the current compilation.
+- If a compilation fails, the last good image stays.
+  The error shows in the echo area and as a mouse tooltip, and `M-x org-typora-math-show-log` shows the compiler output.
+
+### Commands
+
+| Command | Description |
+| --- | --- |
+| `org-typora-math-mode` | Toggle previews in the current Org buffer. |
+| `org-typora-math-refresh` | Clear the image cache and compile all formulas again, including failed ones. |
+| `org-typora-math-show-log` | Show the compiler output for the current buffer. |
+
+Run `org-typora-math-refresh` after you change the preamble, the theme, or the compiler.
+
+### Options
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `org-typora-math-idle-delay` | `0.6` | Seconds to wait after the last text edit |
-| `org-typora-math-scale` | `2.0` | SVG display scale, without another LaTeX compilation |
-| `org-typora-math-inline-popup` | `t` | Use an inline popup, or set to `nil` for a preview below the source |
-| `org-typora-math-process-timeout` | `15` | Maximum seconds for each external process stage |
-| `org-typora-math-latex-program` | `"latex"` | Executable that produces DVI, optionally as an absolute path |
-| `org-typora-math-dvisvgm-program` | `"dvisvgm"` | Executable that converts DVI to SVG |
+| `org-typora-math-idle-delay` | `0.6` | Seconds without edits before compilation starts |
+| `org-typora-math-scale` | `2.0` | Display scale of the SVG images (no new compilation) |
+| `org-typora-math-inline-popup` | `t` | Popup for inline formulas; `nil` shows the preview below the source |
+| `org-typora-math-process-timeout` | `15` | Maximum seconds for each compiler stage |
+| `org-typora-math-latex-program` | `"latex"` | Program that makes DVI (a name or an absolute path) |
+| `org-typora-math-dvisvgm-program` | `"dvisvgm"` | Program that converts DVI to SVG |
 
-Set the delay and image scale in your configuration:
+The `org-typora-math-source` face sets the background of the source that you edit.
+After you change the scale, move point into or out of a formula to redraw the preview.
 
-```elisp
-(setq org-typora-math-idle-delay 0.6
-      org-typora-math-scale 2.0)
-```
+### Preamble
 
-The `org-typora-math-source` face controls the source background.
-After changing the scale, move point into or out of a formula to redraw the preview.
+The preamble is the same as for native Org previews:
 
-Previews use `org-format-latex-header`, Org's package lists for snippet previews, and the buffer's `#+LATEX_HEADER:` entries.
-As with native Org previews, `#+LATEX_HEADER_EXTRA:` does not apply.
-If the `dvisvgm` entry in `org-preview-latex-process-alist` has a `:latex-header` value, that preamble takes precedence.
+- `org-format-latex-header`
+- the Org package lists for snippets
+- the `#+LATEX_HEADER:` lines of the buffer (`#+LATEX_HEADER_EXTRA:` does not apply)
 
-## Commands
+If the `dvisvgm` entry of `org-preview-latex-process-alist` has a `:latex-header` value, that value replaces all of the above.
 
-| Function | Description |
-| --- | --- |
-| `org-typora-math-mode` | Enable or disable previews in the current Org buffer. |
-| `org-typora-math-refresh` | Clear the image cache and rebuild all previews, including failed formulas. Requires the mode to be enabled. |
-| `org-typora-math-show-log` | Show compiler output for the current buffer. |
+## How it works
 
-Use `org-typora-math-refresh` after changing the preamble, theme, or compiler.
+- Org's syntax tree finds the formulas, so `$...$` in source blocks is not previewed.
+  As in native Org previews, only `$...$`, `$$...$$`, `\(...\)`, `\[...\]`, and LaTeX environments are previewed. Commands such as `\ref{...}` are not.
+- Each buffer runs at most one `latex` or `dvisvgm` process at a time.
+  Process sentinels run the two stages in sequence.
+- Each compilation runs in its own temporary directory. The directory is deleted when the job ends or stops.
+- SVG images are cached in memory for each buffer.
+- When you disable the mode, kill the buffer, or change the major mode, all processes, timers, overlays, and popups are removed.
 
-## Implementation
+## Limitations
 
-- Org's syntax tree identifies formulas and excludes `$...$` inside source blocks from previews.
-- Each buffer runs at most one LaTeX or dvisvgm subprocess. `make-process` and process sentinels handle the two compilation stages in sequence.
-- SVG images are cached in memory. Each compilation uses a separate temporary directory, removed after completion or cancellation.
-- Disabling the mode, killing the buffer, or changing the major mode cleans up processes, timers, overlays, and the popup.
-- The inline popup appears in the selected window. If child frames are unavailable, the preview appears below the source.
+### Compilation
 
-## Limitations and compatibility
+- Each formula is a separate document. Equation numbers start again at each formula, and references between formulas do not work.
+- Only DVI output is supported. You cannot use XeLaTeX or LuaLaTeX with PDF output.
+- Compilation runs in a temporary directory. Use absolute paths for files that the preamble loads, for example with `\input`.
+- Compilation is asynchronous, but the buffer parse after each pause is not. In long documents with many formulas, the first pass can be slow.
+- The cache has no size limit and keeps each good SVG version while you edit. To clear it, disable the mode or run `org-typora-math-refresh`.
 
-- Each formula compiles as a separate document, so equation numbers restart and references between formulas are not supported.
-- The backend requires DVI output. It cannot directly use XeLaTeX or LuaLaTeX with PDF output.
-- Compilation runs in a temporary directory. Use absolute paths for external files referenced by commands such as `\input` in the preamble.
-- External compilation runs asynchronously, but Org buffer parsing is synchronous after the delay. The first preview pass can take time in long documents with many formulas.
-- The memory cache has no capacity limit or eviction policy and retains each successful SVG version during edits. Disable the mode or run `org-typora-math-refresh` to clear it.
-- Windows showing the same buffer share the state that controls source visibility.
-- Enabling this mode clears native formula previews and temporarily disables `org-fragtog-mode` in the current buffer. Disabling it restores `org-fragtog-mode` only if that mode was previously active.
-- The final `t` in the `org-mode-hook` example places this mode after existing ordinary hook functions, so it can disable `org-fragtog-mode` if an earlier hook enabled it. If a later hook or command enables `org-fragtog-mode` again, adjust the order to keep the two modes from running together.
-- Use one automatic formula preview mode per buffer. `C-c C-x C-l` still calls native `org-latex-preview`, which can produce overlapping previews.
+### Display
 
-## Tests
+- All windows that show the same buffer share one state for source visibility.
+- The popup shows only in the selected window. If child frames are not available, the preview shows below the source.
 
-Run these commands from the repository directory:
+### Compatibility
 
-```sh
-make test
-make compile
-```
+- When the mode starts, it clears native formula previews and turns off `org-fragtog-mode` in the buffer.
+  When the mode stops, it turns `org-fragtog-mode` on again only if it was on before.
+- If a later hook or command turns `org-fragtog-mode` on again, change the hook order so that the two modes do not run together.
+- `C-c C-x C-l` still runs the native `org-latex-preview`, which can put a second preview on top of this one.
+  Use only one automatic preview mode in a buffer.
 
-Or invoke Emacs directly:
+## Development
 
 ```sh
-emacs --batch -Q -L . -l test/org-typora-math-test.el -f ert-run-tests-batch-and-exit
-emacs --batch -Q -L . --eval '(setq byte-compile-error-on-warn t)' \
-  -f batch-byte-compile org-typora-math.el
+make test      # ERT tests, with real latex and dvisvgm compilation
+make compile   # byte-compile; warnings are errors
 ```
 
-Tests cover real LaTeX/dvisvgm compilation, buffer macros, cache reuse, timer replacement after edits, and rejection of obsolete results.
-They also check that failed compilations retain the previous image, buffer text and undo history stay unchanged, and processes and temporary directories are cleaned up.
-Batch tests skip GUI drawing. Use `demo.el` to check the layout separately.
+The tests check compilation, `#+LATEX_HEADER:` macros, cache reuse, the edit timer, rejection of old results, failure handling, unchanged text and undo history, and cleanup of processes and temporary directories.
+The tests do not draw the GUI. To check the layout, load `demo.el` in a graphical Emacs.
 
 ## References
 
